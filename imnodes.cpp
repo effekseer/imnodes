@@ -140,6 +140,34 @@ inline float EvalImplicitLineEq(const ImVec2& p1, const ImVec2& p2, const ImVec2
 
 inline int Sign(float val) { return int(val > 0.0f) - int(val < 0.0f); }
 
+// Recolor the existing tessellation, preserving the antialiased edge alpha.
+// 既存の分割済み頂点を着色し、アンチエイリアスされた縁のアルファを保持します。
+void DrawPinColoredLink(
+    const CubicBezier& curve,
+    const ImNodesAttributeType start_type,
+    ImU32 start_color,
+    ImU32 end_color)
+{
+    if (start_type == ImNodesAttributeType_Input)
+    {
+        ImSwap(start_color, end_color);
+    }
+    ImDrawList* draw = GImNodes->CanvasDrawList;
+    const int first_vertex = draw->VtxBuffer.Size;
+#if IMGUI_VERSION_NUM < 18000
+    draw->AddBezierCurve(
+#else
+    draw->AddBezierCubic(
+#endif
+        curve.P0, curve.P1, curve.P2, curve.P3,
+        start_color, GImNodes->Style.LinkThickness, curve.NumSegments);
+    if (start_color != end_color && ImLengthSqr(curve.P3 - curve.P0) > 0.f)
+    {
+        ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+            draw, first_vertex, draw->VtxBuffer.Size, curve.P0, curve.P3, start_color, end_color);
+    }
+}
+
 inline bool RectangleOverlapsLineSegment(const ImRect& rect, const ImVec2& p1, const ImVec2& p2)
 {
     // Trivial case: rectangle contains an endpoint
@@ -1043,18 +1071,16 @@ void ClickInteractionUpdate(ImNodesEditorContext& editor)
 
         const CubicBezier cubic_bezier = GetCubicBezier(
             start_pos, end_pos, start_pin.Type, GImNodes->Style.LinkLineSegmentsPerLength);
-#if IMGUI_VERSION_NUM < 18000
-        GImNodes->CanvasDrawList->AddBezierCurve(
-#else
-        GImNodes->CanvasDrawList->AddBezierCubic(
-#endif
-            cubic_bezier.P0,
-            cubic_bezier.P1,
-            cubic_bezier.P2,
-            cubic_bezier.P3,
-            GImNodes->Style.Colors[ImNodesCol_Link],
-            GImNodes->Style.LinkThickness,
-            cubic_bezier.NumSegments);
+        ImU32 start_color = GImNodes->Style.Colors[ImNodesCol_Link];
+        ImU32 end_color = start_color;
+        if (GImNodes->Style.Flags & ImNodesStyleFlags_LinkColorFromPins)
+        {
+            start_color = start_pin.ColorStyle.Background;
+            end_color = should_snap
+                            ? editor.Pins.Pool[GImNodes->HoveredPinIdx.Value()].ColorStyle.Background
+                            : start_color;
+        }
+        DrawPinColoredLink(cubic_bezier, start_pin.Type, start_color, end_color);
 
         const bool link_creation_on_snap =
             GImNodes->HoveredPinIdx.HasValue() &&
@@ -1615,28 +1641,17 @@ void DrawLink(ImNodesEditorContext& editor, const int link_idx)
         return;
     }
 
-    ImU32 link_color = link.ColorStyle.Base;
-    if (editor.SelectedLinkIndices.contains(link_idx))
+    const bool selected = editor.SelectedLinkIndices.contains(link_idx);
+    ImU32 start_color = selected ? link.ColorStyle.Selected
+                                : link_hovered ? link.ColorStyle.Hovered : link.ColorStyle.Base;
+    ImU32 end_color = start_color;
+    if (GImNodes->Style.Flags & ImNodesStyleFlags_LinkColorFromPins)
     {
-        link_color = link.ColorStyle.Selected;
+        const bool highlighted = link_hovered || selected;
+        start_color = highlighted ? start_pin.ColorStyle.Hovered : start_pin.ColorStyle.Background;
+        end_color = highlighted ? end_pin.ColorStyle.Hovered : end_pin.ColorStyle.Background;
     }
-    else if (link_hovered)
-    {
-        link_color = link.ColorStyle.Hovered;
-    }
-
-#if IMGUI_VERSION_NUM < 18000
-    GImNodes->CanvasDrawList->AddBezierCurve(
-#else
-    GImNodes->CanvasDrawList->AddBezierCubic(
-#endif
-        cubic_bezier.P0,
-        cubic_bezier.P1,
-        cubic_bezier.P2,
-        cubic_bezier.P3,
-        link_color,
-        GImNodes->Style.LinkThickness,
-        cubic_bezier.NumSegments);
+    DrawPinColoredLink(cubic_bezier, start_pin.Type, start_color, end_color);
 }
 
 void BeginPinAttribute(
